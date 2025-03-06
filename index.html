@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF to CSV Avanzado</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v3.0.3/dist/tesseract.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <style>
+        /* Estilos mejorados */
+        .container { max-width: 800px; margin: 2rem auto; padding: 1rem; }
+        .progress { height: 20px; background: #eee; margin: 1rem 0; }
+        .progress-bar { height: 100%; background: #4CAF50; transition: width 0.3s; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Conversor Avanzado PDF a CSV</h1>
+        <input type="file" id="pdfInput" accept=".pdf">
+        <div class="progress">
+            <div class="progress-bar" style="width: 0%"></div>
+        </div>
+        <div id="output"></div>
+    </div>
+
+    <script>
+        const worker = Tesseract.createWorker();
+        let isScannedPDF = false;
+
+        document.getElementById('pdfInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            try {
+                await processPDF(file);
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        async function processPDF(file) {
+            const pdfData = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+            let csvContent = "";
+            
+            // Detectar si es PDF escaneado
+            isScannedPDF = await isScanned(pdf);
+
+            if (isScannedPDF) {
+                await worker.load();
+                await worker.loadLanguage('spa+eng');
+                await worker.initialize('spa+eng');
+            }
+
+            for (let i = 1; i <= pdf.numPages; i++) {
+                updateProgress((i / pdf.numPages) * 100);
+                const page = await pdf.getPage(i);
+                csvContent += await extractPageContent(page);
+            }
+
+            if (isScannedPDF) await worker.terminate();
+            downloadCSV(csvContent);
+        }
+
+        async function isScanned(pdf) {
+            try {
+                const page = await pdf.getPage(1);
+                const textContent = await page.getTextContent();
+                return textContent.items.length < 5;
+            } catch {
+                return true;
+            }
+        }
+
+        async function extractPageContent(page) {
+            if (isScannedPDF) {
+                return await processScannedPage(page);
+            } else {
+                return await processTextPage(page);
+            }
+        }
+
+        async function processTextPage(page) {
+            const textContent = await page.getTextContent();
+            return textContent.items
+                .map(item => `"${item.str.replace(/"/g, '""')}"`)
+                .join(',') + '\n';
+        }
+
+        async function processScannedPage(page) {
+            const viewport = page.getViewport({ scale: 2 });
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            await page.render({
+                canvasContext: ctx,
+                viewport: viewport
+            }).promise;
+
+            const { data: { text } } = await worker.recognize(canvas);
+            return text.split('\n')
+                .map(line => line.split(/\s{2,}/)
+                .map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(','))
+                .join('\n') + '\n';
+        }
+
+        function updateProgress(percent) {
+            document.querySelector('.progress-bar').style.width = `${percent}%`;
+        }
+
+        function downloadCSV(content) {
+            const blob = new Blob([content], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `conversion_${Date.now()}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
